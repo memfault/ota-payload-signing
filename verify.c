@@ -8,7 +8,7 @@
 //! To compile and run:
 //!
 //!    gcc -o verify verify.c -lssl -lcrypto
-//!    ./verify <signed file> <public key>
+//!    ./verify <public key> <signed file>
 //!
 //! Note: this program uses functions that are deprecated (but still available)
 //! in OpenSSL 3.0.0. It should be compatible with OpenSSL 1.1.1 and 3+, but has
@@ -22,38 +22,78 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-int verify_signature(const char* filename, const char* pub_key_filename) {
+// Get the SHA256 hash and signature from the file. Processes the file
+// incrementally to avoid allocating a file-sized buffer in memory.
+static int prv_get_sha256_and_signature_from_file(const char* filename,
+                                                  unsigned char* hash,
+                                                  unsigned char* signature,
+                                                  size_t sig_size) {
   FILE* file = fopen(filename, "rb");
   if (file == NULL) {
-    perror("Error opening file");
+    fprintf(stderr, "Error opening file %s\n", filename);
     return -1;
   }
 
-  // Read the file contents into memory
+  // Get the file size
   fseek(file, 0, SEEK_END);
   long file_size = ftell(file);
   fseek(file, 0, SEEK_SET);
-  unsigned char* file_data = (unsigned char*)malloc(file_size);
-  if (file_data == NULL) {
+
+// Define the chunk size
+#define CHUNK_SIZE 16384
+
+  // Initialize the SHA256 context
+  SHA256_CTX sha256;
+  SHA256_Init(&sha256);
+
+  // Read the file contents into memory in chunks
+  unsigned char* buffer = (unsigned char*)malloc(CHUNK_SIZE);
+  if (buffer == NULL) {
     perror("Error allocating memory");
     fclose(file);
     return -1;
   }
-  fread(file_data, 1, file_size, file);
 
-  // Extract the signature from the file. The signature is P1363 encoded (the
-  // 32 byte r + s values concatenated), which we convert to DER for OpenSSL.
-  // The signature is appended to the file when it is signed, so it's the last
-  // 64 bytes of the file.
+  size_t total_bytes_read = 0;
+  size_t bytes_to_read = file_size - sig_size;
+
+  while (total_bytes_read < bytes_to_read) {
+    // Read the chunk, truncated to the remaining bytes
+    #define MIN(a, b) ((a) < (b) ? (a) : (b))
+    const size_t chunk_size = MIN(CHUNK_SIZE, bytes_to_read - total_bytes_read);
+    size_t bytes_read = fread(buffer, 1, chunk_size,
+                       file);
+    // Update the hash with the chunk data
+    SHA256_Update(&sha256, buffer, bytes_read);
+    total_bytes_read += bytes_read;
+  }
+
+  // Finalize the hash
+  SHA256_Final(hash, &sha256);
+
+  // Read the signature from the end of the file
+  fseek(file, -sig_size, SEEK_END);
+  fread(signature, 1, sig_size, file);
+
+  free(buffer);
+  fclose(file);
+
+  return 0;
+}
+
+int verify_signature(const char* filename, const char* pub_key_filename) {
+  // The signature is P1363 encoded (the 32 byte r + s values concatenated),
+  // which we convert to DER for OpenSSL. The signature is appended to the file
+  // when it is signed, so it's the last 64 bytes of the file.
   const size_t sig_size = 64;
   unsigned char signature[sig_size];
-  memcpy(signature, file_data + file_size - sig_size, sig_size);
-
-  // Calculate the hash of the file data
   unsigned char hash[SHA256_DIGEST_LENGTH];
-  SHA256(file_data, file_size - sig_size, hash);
-  free(file_data);
-  fclose(file);
+  int rv = prv_get_sha256_and_signature_from_file(filename, hash, signature,
+                                                  sig_size);
+  if (rv != 0) {
+    perror("Error getting hash and signature from file");
+    return rv;
+  }
 
   // Print the signature
   printf("Signature: ");
@@ -86,7 +126,7 @@ int verify_signature(const char* filename, const char* pub_key_filename) {
     ECDSA_SIG_free(ecdsa_sig);
     return -1;
   }
-ECDSA_SIG_free(ecdsa_sig);
+  ECDSA_SIG_free(ecdsa_sig);
 
   // Load the public key
   FILE* pub_key_file = fopen(pub_key_filename, "r");
