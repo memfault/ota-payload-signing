@@ -37,3 +37,33 @@ $ gcc -g -o verify verify.c \
   -lssl \
   -lcrypto
 ```
+
+## Gzipped Payload
+
+Also provided is an example gzipped payload, which was generated like so:
+
+```bash
+$ echo 'Hello, World!' | gzip > payload.txt.gz
+$ ./sign.py private.pem payload.txt.gz payload.txt.gz.signed
+```
+
+The signed file is now the gzipped payload with the signature appended to the
+end. It can be unzipped as normal- gzip will ignore the trailing signature data:
+
+```bash
+# note the --suffix argument to support the .gz.signed extension
+$ gunzip --keep --suffix .gz.signed payload.txt.gz.signed
+gzip: payload.txt.gz.signed: decompression OK, trailing garbage ignored
+$ cat payload.txt
+Hello, World!
+```
+
+Use `gzip --quiet` to suppress the warning about the trailing garbage.
+
+You can verify the gzipped payload just like the plaintext payload:
+
+```bash
+$ ./verify public.pem payload.txt.gz.signed
+Signature: 533ad8724802ebb5a92dba5b41841501e3146aa855a208fc6b7ce24db87b09088880e1b372f7b6f076817f8c5cbab3bcc10866320439cb03fde626b09445fb6e
+Signature verification successful!
+```
